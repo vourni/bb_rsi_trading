@@ -4,6 +4,12 @@ import os
 import pandas as pd
 import matplotlib.pyplot as plt
 
+INITIAL_BALANCE = 10000
+RISK = 0.01
+
+START_DATE = '2010-01-01'
+END_DATE = '2025-03-10'
+
 
 class stock_signals:
     def __init__(self, ticker, start_date, end_date):
@@ -16,6 +22,7 @@ class stock_signals:
     def get_data(self):
         data = yf.download(tickers=self.ticker, start=self.start_date, end=self.end_date, auto_adjust=True)
         data['tp'] = (data['Close'] + data['High'] + data['Low']) / 3
+        data['true_range'] = pd.concat([data['High'] - data['Low'], (data['High'] - data['Close'].shift(1)).abs(),(data['Low'] - data['Close'].shift(1)).abs()], axis=1).max(axis=1)
         data['ticker'] = f'{ticker}'
 
         data.columns = data.columns.rename({'Price': ''}) 
@@ -42,30 +49,40 @@ class stock_signals:
 
         self.data['rsi'] = 100 - (100 / (1 + relative_strength))
 
+        self.data['atr'] = self.data['true_range'].rolling(14).mean()
+        self.data['norm_atr'] = self.data['atr'] / self.data['close']
+
         self.data = self.data[19:]
 
-        self.data = self.data[['close', 'sma_20', 'upper_band', 'lower_band', 'rsi', 'ticker']]
+        self.data = self.data[['close', 'sma_20', 'upper_band', 'lower_band', 'rsi', 'ticker', 'norm_atr']]
 
     
     def generate_signals(self):
         self.data['signal'] = ''
 
         for index,row in self.data.iterrows():
+
             if (row['close'] <= row['lower_band']) & (row['rsi'] < 40):
                 self.data.loc[index, 'signal'] = 'buy'
+
             elif (row['close'] >= row['upper_band']) & (row['rsi'] > 60):
                 self.data.loc[index, 'signal'] = 'sell'
+
             else:
                 self.data.loc[index, 'signal'] = 'hold'
+
 
         signals = self.data['signal'].copy()
         last_signal = 'sell'
         new_signals = ['hold'] * len(signals)
 
+
         for i in range(len(signals)):
+
             if signals.iloc[i] == 'buy' and last_signal != 'buy':
                 new_signals[i] = 'buy'
                 last_signal = 'buy'
+
             elif signals.iloc[i] == 'sell' and last_signal != 'sell':
                 new_signals[i] = 'sell'
                 last_signal = 'sell'
@@ -95,22 +112,78 @@ class stock_signals:
         fig.legend()
         plt.show()
 
+
+class backtester:
+    def __init__(self, initial_balance, data):
+        self.data = data
+        self.cash = initial_balance
+
+        self.holdings = {}
+        self.portfolio = {
+            'Date' : [],
+            'Ticker' : [],
+            'Position' : [],
+            'Cash' : [],
+            'Portfolio Value' : []
+        }
+
+
+    def calculate_position_size(self, atr, price):
+        position_size = (RISK * self.cash) / (atr * price)
+        position_size = int(position_size)
+
+        return position_size
+    
+
+    def backtest(self):
+        for i,row in self.data.iterrows():
+            ticker = row['ticker']
+            price = row['close']
+            signal = row['signal']
+
+
+            if signal == 'buy':
+                position_size = self.calculate_position_size(row['norm_atr'], price)
+
+            if (signal == 'buy') and (self.cash >= (position_size * price)):
+                self.holdings[ticker] = self.holdings.get(ticker, 0) + position_size
+                self.cash -= position_size * price
+
+            elif (signal == 'sell') and (self.holdings.get(ticker, 0) > 0):
+                self.cash += self.holdings[ticker] * price
+                self.holdings[ticker] = 0
+
+
+            self.portfolio['Date'].append(i)
+            self.portfolio['Ticker'].append(ticker)
+            self.portfolio['Position'].append(self.holdings.get(ticker, 0))
+            self.portfolio['Cash'].append(self.cash)
+            self.portfolio['Portfolio Value'].append(self.cash)
+
+        self.portfolio = pd.DataFrame(self.portfolio)
+        print(self.portfolio) 
+
     
 if __name__ == '__main__':
     tickers = ['AAPL', 'SPY', 'GLD', 'LLY', 'NVDA', 'WMT', 'MSFT', 'TSLA', 'QQQ', 'ORCL', 'PCG', 'ANF', 'VALE']
-    start_date = '2010-01-01'
-    end_date = '2025-03-10'
-    initial_balance = 10,000
 
     data = pd.DataFrame()
     
     for ticker in tickers:
-        stock = stock_signals(ticker, start_date, end_date)
+        stock = stock_signals(ticker, START_DATE, END_DATE)
         stock.get_data()
         stock.calculate_technicals()
         stock.generate_signals()
         #stock.generate_plot()
-        temp_data = stock.data[(stock.data['signal'] == 'buy') | (stock.data['signal'] == 'sell')][['ticker', 'signal', 'close']]
+
+        temp_data = stock.data[(stock.data['signal'] == 'buy') | (stock.data['signal'] == 'sell')][['ticker', 'signal', 'close', 'norm_atr']]
+        if temp_data.iloc[-1]['signal'] == 'buy':
+            temp_data = temp_data.iloc[:-1]
+
         data = pd.concat([data, temp_data])
     
-    print(data.sort_index())
+    data = data.sort_index()
+
+    portfolio = backtester(INITIAL_BALANCE, data)
+    portfolio.backtest()
+
