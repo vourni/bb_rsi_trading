@@ -121,8 +121,6 @@ class backtester:
         self.holdings = {}
         self.portfolio = {
             'Date' : [],
-            'Ticker' : [],
-            'Position' : [],
             'Cash' : [],
             'Portfolio Value' : []
         }
@@ -136,6 +134,9 @@ class backtester:
     
 
     def backtest(self):
+
+        last_date = None
+
         for i,row in self.data.iterrows():
             ticker = row['ticker']
             price = row['close']
@@ -144,34 +145,39 @@ class backtester:
 
             if signal == 'buy':
                 position_size = self.calculate_position_size(row['norm_atr'], price)
-
-            if (signal == 'buy') and (self.cash >= (position_size * price)):
-                self.holdings[ticker] = self.holdings.get(ticker, 0) + position_size
-                self.cash -= position_size * price
+                if self.cash >= position_size * price:
+                    self.holdings[ticker] = self.holdings.get(ticker, 0) + position_size
+                    self.cash -= position_size * price
 
             elif (signal == 'sell') and (self.holdings.get(ticker, 0) > 0):
                 self.cash += self.holdings[ticker] * price
                 self.holdings[ticker] = 0
 
-            portfolio_value = self.cash + sum(self.holdings.get(t, 0) * self.data[self.data['ticker'] == t].loc[i, 'close'] for t in self.data['ticker'].unique())
+            if last_date != i:
+                portfolio_value = self.cash + sum(self.holdings.get(t, 0) * self.data[self.data['ticker'] == t].loc[i, 'close'] for t in self.data['ticker'].unique())
+                self.portfolio['Date'].append(i)
+                self.portfolio['Cash'].append(self.cash)
+                self.portfolio['Portfolio Value'].append(portfolio_value)
+                last_date = i
 
-            self.portfolio['Date'].append(i)
-            self.portfolio['Ticker'].append(ticker)
-            self.portfolio['Position'].append(self.holdings.get(ticker, 0))
-            self.portfolio['Cash'].append(self.cash)
-            self.portfolio['Portfolio Value'].append(portfolio_value)
+            print(i)
 
         self.portfolio = pd.DataFrame(self.portfolio)
     
 
     def output(self):
         print(self.portfolio)
-        plt.plot(self.portfolio['Portfolio Value'])
+        plt.plot(self.data.index.unique(), self.portfolio['Portfolio Value'], color='green', label='Strategy')
+        plt.plot(self.data[self.data['ticker'] == 'SPY']['close'] * (10000 / self.data[self.data['ticker'] == 'SPY']['close'].iloc[0]), color='red', label='$SPY')
+        plt.xlabel('Date')
+        plt.ylabel('USD')
+        plt.title('Bollinger Bands and RSI Strategy plotted against $SPY')
+        plt.legend()
         plt.show()
 
     
 if __name__ == '__main__':
-    tickers = ['AAPL', 'SPY', 'GLD', 'LLY']#, 'NVDA', 'WMT', 'MSFT', 'TSLA', 'QQQ', 'ORCL', 'PCG', 'ANF', 'VALE']
+    tickers = ['AAPL', 'SPY', 'GLD', 'LLY', 'NVDA', 'WMT', 'MSFT']
     data = pd.DataFrame()
     
     for ticker in tickers:
@@ -182,7 +188,6 @@ if __name__ == '__main__':
 
         temp_data = stock.data[['ticker', 'signal', 'close', 'norm_atr']]
         data = pd.concat([data, temp_data])
-    
 
     data = data.sort_index()
 
