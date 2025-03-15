@@ -6,7 +6,6 @@ import matplotlib.pyplot as plt
 
 
 class stock_signals:
-    
     def __init__(self, ticker, start_date, end_date):
         self.data = None
         self.ticker = ticker
@@ -15,25 +14,25 @@ class stock_signals:
 
 
     def get_data(self):
-
         data = yf.download(tickers=self.ticker, start=self.start_date, end=self.end_date, auto_adjust=True)
-        data['TP'] = (data['Close'] + data['High'] + data['Low']) / 3
+        data['tp'] = (data['Close'] + data['High'] + data['Low']) / 3
+        data['ticker'] = f'{ticker}'
 
-        data.columns = data.columns.rename({'Price': f'{self.ticker}'}) 
+        data.columns = data.columns.rename({'Price': ''}) 
         data.columns = data.columns.droplevel(1)
+        data.columns = [x.lower() for x in data.columns]
 
         self.data = data
 
 
     def calculate_technicals(self):
+        self.data['sma_20'] = self.data['tp'].rolling(window=20).mean()
+        self.data['std'] = self.data['tp'].rolling(window=20).std()
 
-        self.data['SMA_20'] = self.data['TP'].rolling(window=20).mean()
-        self.data['std'] = self.data['TP'].rolling(window=20).std()
+        self.data['upper_band'] = self.data['sma_20'] + 2.2 * self.data['std']
+        self.data['lower_band'] = self.data['sma_20'] - 2.2 * self.data['std']
 
-        self.data['upper_band'] = self.data['SMA_20'] + 2 * self.data['std']
-        self.data['lower_band'] = self.data['SMA_20'] - 2 * self.data['std']
-
-        delta = self.data['Close'].diff(1)
+        delta = self.data['close'].diff(1)
         gains = delta.where(delta > 0,0)
         losses = -delta.where(delta < 0, 0)
         
@@ -41,27 +40,24 @@ class stock_signals:
         average_losses = losses.ewm(14, min_periods=1).mean()
         relative_strength = average_gains / average_losses
 
-        self.data['RSI'] = 100 - (100 / (1 + relative_strength))
+        self.data['rsi'] = 100 - (100 / (1 + relative_strength))
 
         self.data = self.data[19:]
 
-        self.data = self.data[['Close', 'SMA_20', 'upper_band', 'lower_band', 'RSI']]
+        self.data = self.data[['close', 'sma_20', 'upper_band', 'lower_band', 'rsi', 'ticker']]
 
     
     def generate_signals(self):
-
         self.data['signal'] = ''
 
         for index,row in self.data.iterrows():
-            if (row['Close'] <= row['lower_band']) & (row['RSI'] < 30):
+            if (row['close'] <= row['lower_band']) & (row['rsi'] < 40):
                 self.data.loc[index, 'signal'] = 'buy'
-            elif (row['Close'] >= row['upper_band']) & (row['RSI'] > 70):
+            elif (row['close'] >= row['upper_band']) & (row['rsi'] > 60):
                 self.data.loc[index, 'signal'] = 'sell'
             else:
                 self.data.loc[index, 'signal'] = 'hold'
 
-    def alternate_signals(self):
-        
         signals = self.data['signal'].copy()
         last_signal = 'sell'
         new_signals = ['hold'] * len(signals)
@@ -75,21 +71,22 @@ class stock_signals:
                 last_signal = 'sell'
 
         self.data['signal'] = new_signals
-    
+
+
     def generate_plot(self):
         fig, (ax1, ax2) = plt.subplots(2, figsize=(30,30) ,sharex=True)
         fig.suptitle(f'Plot of ${self.ticker} with Bollinger Bands and Macd')
 
-        ax1.plot(self.data['Close'], label='Price')
+        ax1.plot(self.data['close'], label='Price')
         ax1.plot(self.data['lower_band'], label='Lower bollinger band', color='green', linewidth=1)
         ax1.plot(self.data['upper_band'], label='Upper bollinger band', color='red', linewidth=1)
 
-        ax2.plot(self.data['RSI'], label='Relative Strength Index', color='orange')
+        ax2.plot(self.data['rsi'], label='Relative Strength Index', color='orange')
 
         buy_signals = self.data[self.data['signal'] == 'buy']
         sell_signals = self.data[self.data['signal'] == 'sell']
-        ax1.scatter(buy_signals.index, buy_signals['Close'], marker='^', color='green', s=75, label='Buy')
-        ax1.scatter(sell_signals.index, sell_signals['Close'], marker='v', color='red', s=75, label='Sell')
+        ax1.scatter(buy_signals.index, buy_signals['close'], marker='^', color='green', s=75, label='Buy')
+        ax1.scatter(sell_signals.index, sell_signals['close'], marker='v', color='red', s=75, label='Sell')
 
         ax1.set_ylabel('Price')
         ax2.set_ylabel('RSI')
@@ -99,24 +96,21 @@ class stock_signals:
         plt.show()
 
     
-    def kelly_criterion(self):
-
-        returns = np.log(self.data['Close'] / self.data['Close'].shift(1)).dropna()
-
-
 if __name__ == '__main__':
-    stocks = ['AAPL', 'SPY']
+    tickers = ['AAPL', 'SPY', 'GLD', 'LLY', 'NVDA', 'WMT', 'MSFT', 'TSLA', 'QQQ', 'ORCL', 'PCG', 'ANF', 'VALE']
     start_date = '2010-01-01'
     end_date = '2025-03-10'
+    initial_balance = 10,000
 
-
-
-    for stock in stocks:
-        stock = stock_signals(stock, start_date, end_date)
+    data = pd.DataFrame()
+    
+    for ticker in tickers:
+        stock = stock_signals(ticker, start_date, end_date)
         stock.get_data()
         stock.calculate_technicals()
         stock.generate_signals()
-        stock.alternate_signals()
         #stock.generate_plot()
-        print(stock.data[(stock.data['signal'] == 'buy') | (stock.data['signal'] == 'sell')])
-
+        temp_data = stock.data[(stock.data['signal'] == 'buy') | (stock.data['signal'] == 'sell')][['ticker', 'signal', 'close']]
+        data = pd.concat([data, temp_data])
+    
+    print(data.sort_index())
