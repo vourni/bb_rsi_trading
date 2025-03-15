@@ -153,20 +153,25 @@ class backtester:
                 self.cash += self.holdings[ticker] * price
                 self.holdings[ticker] = 0
 
+            portfolio_value = self.cash + sum(self.holdings.get(t, 0) * self.data[self.data['ticker'] == t].loc[i, 'close'] for t in self.data['ticker'].unique())
 
             self.portfolio['Date'].append(i)
             self.portfolio['Ticker'].append(ticker)
             self.portfolio['Position'].append(self.holdings.get(ticker, 0))
             self.portfolio['Cash'].append(self.cash)
-            self.portfolio['Portfolio Value'].append(self.cash)
+            self.portfolio['Portfolio Value'].append(portfolio_value)
 
         self.portfolio = pd.DataFrame(self.portfolio)
-        print(self.portfolio) 
+    
+
+    def output(self):
+        print(self.portfolio)
+        plt.plot(self.portfolio['Portfolio Value'])
+        plt.show()
 
     
 if __name__ == '__main__':
-    tickers = ['AAPL', 'SPY', 'GLD', 'LLY', 'NVDA', 'WMT', 'MSFT', 'TSLA', 'QQQ', 'ORCL', 'PCG', 'ANF', 'VALE']
-
+    tickers = ['AAPL', 'SPY', 'GLD', 'LLY']#, 'NVDA', 'WMT', 'MSFT', 'TSLA', 'QQQ', 'ORCL', 'PCG', 'ANF', 'VALE']
     data = pd.DataFrame()
     
     for ticker in tickers:
@@ -174,16 +179,13 @@ if __name__ == '__main__':
         stock.get_data()
         stock.calculate_technicals()
         stock.generate_signals()
-        #stock.generate_plot()
 
-        temp_data = stock.data[(stock.data['signal'] == 'buy') | (stock.data['signal'] == 'sell')][['ticker', 'signal', 'close', 'norm_atr']]
-        if temp_data.iloc[-1]['signal'] == 'buy':
-            temp_data = temp_data.iloc[:-1]
-
+        temp_data = stock.data[['ticker', 'signal', 'close', 'norm_atr']]
         data = pd.concat([data, temp_data])
     
+
     data = data.sort_index()
 
     portfolio = backtester(INITIAL_BALANCE, data)
     portfolio.backtest()
-
+    portfolio.output()
