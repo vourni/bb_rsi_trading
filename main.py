@@ -1,22 +1,36 @@
 import yfinance as yf
 import numpy as np
-import os
 import pandas as pd
 import matplotlib.pyplot as plt
 
+pd.set_option('display.max_rows', None)
+
 INITIAL_BALANCE = 10000
+
 RISK = 0.01
 
-START_DATE = '2010-01-01'
+LONG_STOP_LOSS = 0.05
+LONG_TAKE_PROFIT = 0.1
+
+SHORT_STOP_LOSS = 0.01
+SHORT_TAKE_PROFIT = 0.03
+
+STD_MULT = 2
+UPPER_THRESH = 80
+LOWER_THRESH = 30
+
+START_DATE = '2022-01-01'
 END_DATE = '2025-03-10'
 
 
 class stock_signals:
     def __init__(self, ticker, start_date, end_date):
         self.data = None
+        self.buy_price = None
         self.ticker = ticker
         self.start_date = start_date
         self.end_date = end_date
+
 
 
     def get_data(self):
@@ -32,19 +46,20 @@ class stock_signals:
         self.data = data
 
 
+
     def calculate_technicals(self):
         self.data['sma_20'] = self.data['tp'].rolling(window=20).mean()
         self.data['std'] = self.data['tp'].rolling(window=20).std()
 
-        self.data['upper_band'] = self.data['sma_20'] + 2.2 * self.data['std']
-        self.data['lower_band'] = self.data['sma_20'] - 2.2 * self.data['std']
+        self.data['upper_band'] = self.data['sma_20'] + STD_MULT * self.data['std']
+        self.data['lower_band'] = self.data['sma_20'] - STD_MULT * self.data['std']
 
-        delta = self.data['close'].diff(1)
+        delta = self.data['close'].diff()
         gains = delta.where(delta > 0,0)
         losses = -delta.where(delta < 0, 0)
         
-        average_gains = gains.ewm(14, min_periods=1).mean()
-        average_losses = losses.ewm(14, min_periods=1).mean()
+        average_gains = gains.rolling(14, min_periods=1).mean()
+        average_losses = losses.rolling(14, min_periods=1).mean()
         relative_strength = average_gains / average_losses
 
         self.data['rsi'] = 100 - (100 / (1 + relative_strength))
@@ -57,37 +72,34 @@ class stock_signals:
         self.data = self.data[['close', 'sma_20', 'upper_band', 'lower_band', 'rsi', 'ticker', 'norm_atr']]
 
     
+
     def generate_signals(self):
+        action = None
         self.data['signal'] = ''
 
         for index,row in self.data.iterrows():
 
-            if (row['close'] <= row['lower_band']) & (row['rsi'] < 40):
-                self.data.loc[index, 'signal'] = 'buy'
+            if row['close'] <= row['lower_band'] and row['rsi'] < LOWER_THRESH and action not in ['long_entry', 'short_entry']:
+                self.data.loc[index, 'signal'] = 'long_entry'
+                self.buy_price = row['close']
+                action = 'long_entry'
 
-            elif (row['close'] >= row['upper_band']) & (row['rsi'] > 60):
-                self.data.loc[index, 'signal'] = 'sell'
+            elif row['close'] >= row['upper_band'] and row['rsi'] > UPPER_THRESH and action not in  ['short_entry', 'long_entry']:
+                self.data.loc[index, 'signal'] = 'short_entry'
+                self.buy_price = row['close']
+                action = 'short_entry'
 
+            elif action == 'long_entry' and (self.buy_price * (1-LONG_STOP_LOSS) >= row['close'] or self.buy_price * (1+LONG_TAKE_PROFIT) <= row['close']):
+                self.data.loc[index, 'signal'] = 'long_exit'
+                action = 'long_exit'
+
+            elif action == 'short_entry' and (self.buy_price * (1-SHORT_TAKE_PROFIT) >= row['close'] or self.buy_price * (1+SHORT_STOP_LOSS) <= row['close']):
+                self.data.loc[index, 'signal'] = 'short_exit'
+                action = 'short_exit'
+            
             else:
                 self.data.loc[index, 'signal'] = 'hold'
 
-
-        signals = self.data['signal'].copy()
-        last_signal = 'sell'
-        new_signals = ['hold'] * len(signals)
-
-
-        for i in range(len(signals)):
-
-            if signals.iloc[i] == 'buy' and last_signal != 'buy':
-                new_signals[i] = 'buy'
-                last_signal = 'buy'
-
-            elif signals.iloc[i] == 'sell' and last_signal != 'sell':
-                new_signals[i] = 'sell'
-                last_signal = 'sell'
-
-        self.data['signal'] = new_signals
 
 
     def generate_plot(self):
@@ -100,10 +112,14 @@ class stock_signals:
 
         ax2.plot(self.data['rsi'], label='Relative Strength Index', color='orange')
 
-        buy_signals = self.data[self.data['signal'] == 'buy']
-        sell_signals = self.data[self.data['signal'] == 'sell']
-        ax1.scatter(buy_signals.index, buy_signals['close'], marker='^', color='green', s=75, label='Buy')
-        ax1.scatter(sell_signals.index, sell_signals['close'], marker='v', color='red', s=75, label='Sell')
+        long_entry_signals = self.data[self.data['signal'] == 'long_entry']
+        short_entry_signals = self.data[self.data['signal'] == 'short_entry']
+        long_exit_signals = self.data[self.data['signal'] == 'long_exit']
+        short_exit_signals = self.data[self.data['signal'] == 'short_exit']
+        ax1.scatter(long_entry_signals.index, long_entry_signals['close'], marker='^', color='green', s=75, label='Long Entry')
+        ax1.scatter(short_entry_signals.index, short_entry_signals['close'], marker='v', color='red', s=75, label='Short Entry')
+        ax1.scatter(long_exit_signals.index, long_exit_signals['close'], marker='o', color='green', s=75, label='Long Exit')
+        ax1.scatter(short_exit_signals.index, short_exit_signals['close'], marker='o', color='red', s=75, label='Short Exit')
 
         ax1.set_ylabel('Price')
         ax2.set_ylabel('RSI')
@@ -113,28 +129,35 @@ class stock_signals:
         plt.show()
 
 
+
 class backtester:
     def __init__(self, initial_balance, data):
         self.data = data
         self.cash = initial_balance
 
+        self.short_buy_price = {}
         self.holdings = {}
         self.portfolio = {
             'Date' : [],
+            'Ticker' : [],
+            'Action' : [],
+            'Position' : [], 
             'Cash' : [],
             'Portfolio Value' : []
         }
 
 
+
     def calculate_position_size(self, atr, price):
-        position_size = (RISK * self.cash) / (atr * price)
+        #position_size = (RISK * self.cash) / (atr * price)
+        position_size = 0.05*self.cash / price
         position_size = int(position_size)
 
         return position_size
     
 
-    def backtest(self):
 
+    def backtest(self):
         last_date = None
 
         for i,row in self.data.iterrows():
@@ -143,19 +166,35 @@ class backtester:
             signal = row['signal']
 
 
-            if signal == 'buy':
+            if signal == 'long_entry':
                 position_size = self.calculate_position_size(row['norm_atr'], price)
                 if self.cash >= position_size * price:
                     self.holdings[ticker] = self.holdings.get(ticker, 0) + position_size
                     self.cash -= position_size * price
 
-            elif (signal == 'sell') and (self.holdings.get(ticker, 0) > 0):
+            if signal == 'short_entry':
+                position_size = self.calculate_position_size(row['norm_atr'], price)
+                if self.cash >= position_size * price:
+                    self.holdings[ticker] = self.holdings.get(ticker, 0) - position_size
+                    self.cash -= abs(position_size) * price
+                    self.short_buy_price[ticker] = price
+
+            elif signal == 'long_exit' and self.holdings.get(ticker, 0) > 0:
                 self.cash += self.holdings[ticker] * price
                 self.holdings[ticker] = 0
 
+            elif signal == 'short_exit' and self.holdings.get(ticker, 0) < 0:
+                print(abs(self.holdings[ticker]) * (self.short_buy_price[ticker] - price))
+                self.cash += abs(self.holdings[ticker]) * (2 * self.short_buy_price[ticker] - price)
+                del self.short_buy_price[ticker]
+                self.holdings[ticker] = 0
+
             if last_date != i:
-                portfolio_value = self.cash + sum(self.holdings.get(t, 0) * self.data[self.data['ticker'] == t].loc[i, 'close'] for t in self.data['ticker'].unique())
+                portfolio_value = self.cash + sum(abs(self.holdings.get(t, 0)) * self.data[self.data['ticker'] == t].loc[i, 'close'] for t in list(self.holdings.keys()))
                 self.portfolio['Date'].append(i)
+                self.portfolio['Ticker'].append(ticker),
+                self.portfolio['Action'].append(row['signal'])
+                self.portfolio['Position'].append(0)
                 self.portfolio['Cash'].append(self.cash)
                 self.portfolio['Portfolio Value'].append(portfolio_value)
                 last_date = i
@@ -164,6 +203,7 @@ class backtester:
 
         self.portfolio = pd.DataFrame(self.portfolio)
     
+
 
     def output(self):
         print(self.portfolio)
@@ -176,8 +216,9 @@ class backtester:
         plt.show()
 
     
+
 if __name__ == '__main__':
-    tickers = ['AAPL', 'SPY', 'GLD', 'LLY', 'NVDA', 'WMT', 'MSFT']
+    tickers = ['SPY', 'AAPL']#, 'GLD', 'LLY', 'NVDA', 'WMT', 'MSFT', 'GOVT', 'TEAM', 'FXI', 'IWM', 'AVGO', 'JPM', 'JNJ', 'GOOG', 'CVNA', ]
     data = pd.DataFrame()
     
     for ticker in tickers:
@@ -185,11 +226,15 @@ if __name__ == '__main__':
         stock.get_data()
         stock.calculate_technicals()
         stock.generate_signals()
+        #stock.generate_plot()
 
         temp_data = stock.data[['ticker', 'signal', 'close', 'norm_atr']]
         data = pd.concat([data, temp_data])
 
     data = data.sort_index()
+
+    print(data[data['signal'].isin(['short_entry', 'short_exit'])])
+
 
     portfolio = backtester(INITIAL_BALANCE, data)
     portfolio.backtest()
