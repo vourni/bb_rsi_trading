@@ -6,13 +6,13 @@ import matplotlib.pyplot as plt
 pd.set_option('display.max_rows', None)
 
 INITIAL_BALANCE = 100000
-RISK = 0.02
+RISK = 0.5
 
 STD_MULT = 2.3
 UPPER_THRESH = 70
 LOWER_THRESH = 30
 
-START_DATE = '2010-01-01'
+START_DATE = '2022-01-01'
 END_DATE = '2025-03-10'
 
 
@@ -54,13 +54,13 @@ class stock_signals:
         relative_strength = average_gains / average_losses
         self.data['rsi'] = 100 - (100 / (1 + relative_strength))
         self.data['rsi_oversold_percentile'] = self.data['rsi'].rolling(100).apply(lambda x: np.percentile(x, 20))
-        self.data['rsi_undersold_percentile'] = self.data['rsi'].rolling(100).apply(lambda x: np.percentile(x, 80))
+        self.data['rsi_overbought_percentile'] = self.data['rsi'].rolling(100).apply(lambda x: np.percentile(x, 80))
 
         self.data['atr'] = self.data['true_range'].rolling(50).mean()
-        self.data['norm_atr'] = self.data['atr'] / self.data['close']
+        self.data['norm_atr'] = (self.data['atr'] / self.data['close']) * 100
         self.data['atr_percentile'] = self.data['atr'].rolling(50).apply(lambda x: np.percentile(x, 75))
-        self.data['stopl'] = self.data['atr'] * np.where(self.data['atr'] > self.data['atr_percentile'], 3, 2) * self.data['close']
-        self.data['takep'] = self.data['atr'] * np.where(self.data['atr'] > self.data['atr_percentile'], 5, 3) * self.data['close']
+        self.data['stopl'] = self.data['norm_atr'] * np.where(self.data['atr'] > self.data['atr_percentile'], 4, 2) * self.data['close']
+        self.data['takep'] = self.data['norm_atr'] * np.where(self.data['atr'] > self.data['atr_percentile'], 6, 3) * self.data['close']
 
         plus = self.data['high'].diff()
         minus = self.data['low'].diff()
@@ -71,7 +71,7 @@ class stock_signals:
         dx = 100 * abs(plus_ - minus_) / (plus_ + minus_)
         self.data['adx'] = dx.rolling(14).mean()
 
-        self.data = self.data[99:]
+        self.data = self.data[100:]
 
     
 
@@ -82,25 +82,25 @@ class stock_signals:
 
         for index,row in self.data.iterrows():
 
-            if row['close'] <= row['lower_band'] and row['rsi'] < row['rsi_oversold_percentile'] and row['adx'] < 25 and long_action != 'entry':
+            if row['close'] <= row['lower_band'] and row['rsi'] < row['rsi_oversold_percentile'] and row['adx'] < 30 and long_action != 'entry':
                 self.data.loc[index, 'signal'] = 'long_entry'
+                long_action = 'entry'
                 self.buy_price = row['close']
                 long_take_profit = row['takep']
                 long_stop_loss = row['stopl']
-                long_action = 'entry'
 
-            elif row['close'] >= row['upper_band'] and row['rsi'] > row['rsi_undersold_percentile'] and row['adx'] < 25 and short_action != 'entry':
+            elif row['close'] >= row['upper_band'] and row['rsi'] > row['rsi_overbought_percentile'] and row['adx'] < 30 and short_action != 'entry':
                 self.data.loc[index, 'signal'] = 'short_entry'
+                short_action = 'entry'
                 self.buy_price = row['close']
                 short_take_profit = row['takep']
                 short_stop_loss = row['stopl']
-                short_action = 'entry'
 
-            elif long_action == 'entry' and (long_stop_loss >= row['close'] or long_take_profit <= row['close']) and row['rsi'] > 50:
+            elif long_action == 'entry' and (long_stop_loss >= row['close'] or long_take_profit <= row['close']) and row['rsi'] > 55:
                 self.data.loc[index, 'signal'] = 'long_exit'
                 long_action = 'exit'
 
-            elif short_action == 'entry' and (short_take_profit >= row['close'] or short_stop_loss <= row['close']) and row['rsi'] < 50:
+            elif short_action == 'entry' and (short_take_profit >= row['close'] or short_stop_loss <= row['close']) and row['rsi'] < 45:
                 self.data.loc[index, 'signal'] = 'short_exit'
                 short_action = 'exit'
             
@@ -173,12 +173,14 @@ class backtester:
                 if self.cash >= position_size * price:
                     self.holdings[ticker] = self.holdings.get(ticker, 0) + position_size
                     self.cash -= position_size * price
+                    print(f'Long entry \nDate: {i} \nPosition size: {position_size} \nTotal cost: {position_size * price}')
 
             if signal == 'short_entry':
                 position_size = self.calculate_position_size(row['norm_atr'], price)
                 if self.cash >= position_size * price:
                     self.holdings[ticker] = self.holdings.get(ticker, 0) - position_size
                     self.short_buy_price[ticker] = price
+                    print(f'Short entry \n Position size: {position_size} \n Total cost: {position_size * price}')
 
             elif signal == 'long_exit' and self.holdings.get(ticker, 0) > 0:
                 self.cash += self.holdings[ticker] * price
@@ -200,7 +202,6 @@ class backtester:
 
                 last_date = i
 
-            print(i)
 
         self.portfolio = pd.DataFrame(self.portfolio)
     
@@ -219,7 +220,7 @@ class backtester:
     
 
 if __name__ == '__main__':
-    tickers = ['SPY']#, 'AAPL', 'GLD', 'LLY', 'NVDA', 'WMT', 'MSFT', 'GOVT', 'TEAM', 'FXI', 'IWM', 'AVGO', 'JPM', 'JNJ', 'GOOG', 'CVNA']
+    tickers = ['SPY', 'AAPL']#, 'GLD', 'LLY', 'NVDA', 'WMT', 'MSFT', 'GOVT', 'TEAM', 'FXI', 'IWM', 'AVGO', 'JPM', 'JNJ', 'GOOG', 'CVNA']
     data = pd.DataFrame()
     
     for ticker in tickers:
@@ -234,8 +235,6 @@ if __name__ == '__main__':
 
     data = data.sort_index()
 
-    print(data[data['signal'].isin(['short_entry', 'short_exit', 'long_entry', 'long_exit'])])
-
-    #portfolio = backtester(INITIAL_BALANCE, data)
-    #portfolio.backtest()
-    #portfolio.output()
+    portfolio = backtester(INITIAL_BALANCE, data)
+    portfolio.backtest()
+    portfolio.output()
