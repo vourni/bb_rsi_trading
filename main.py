@@ -105,31 +105,36 @@ class stock_signals:
 
         for index,row in self.data.iterrows():
             # Iterating through rows
+            # Useing indicators to generate signals
             if row['close'] <= row['lower_band'] and row['rsi'] < row['rsi_oversold_percentile'] and row['sma_50'] > row['sma_200'] and long_action != 'entry':
+                # Setting signals
                 self.data.loc[index, 'signal'] = 'long_entry'
                 long_action = 'entry'
-                self.buy_price = row['close']
+                # Setting exit points
                 long_take_profit = row['takep']
                 long_stop_loss = row['stopl']
 
             elif row['close'] >= row['upper_band'] and row['rsi'] > row['rsi_overbought_percentile'] and row['sma_50'] < row['sma_200'] and short_action != 'entry':
+                # Setting Signals
                 self.data.loc[index, 'signal'] = 'short_entry'
                 short_action = 'entry'
-                self.buy_price = row['close']
+                # Setting dexit points
                 short_take_profit = row['takep']
                 short_stop_loss = row['stopl']
 
             elif long_action == 'entry' and (long_stop_loss >= row['close'] or long_take_profit <= row['close']) and row['rsi'] > 55:
+                # Setting signals
                 self.data.loc[index, 'signal'] = 'long_exit'
                 long_action = 'exit'
 
             elif short_action == 'entry' and (short_take_profit >= row['close'] or short_stop_loss <= row['close']) and row['rsi'] < 45:
+                #Setting Signals
                 self.data.loc[index, 'signal'] = 'short_exit'
                 short_action = 'exit'
             
             else:
+                # Setting hold to all other spaces that dont meet criteria 
                 self.data.loc[index, 'signal'] = 'hold'
-
 
 
     def generate_plot(self):
@@ -201,6 +206,7 @@ class backtester:
         position_size = (RISK * self.cash) / (atr * price)
         # Set position size to integer
         position_size = int(position_size)
+        # Making sure position isnt 0
         if position_size == 0:
             position_size = 1
         return position_size
@@ -217,8 +223,6 @@ class backtester:
             ticker = row['ticker']
             price = row['close']
             signal = row['signal']
-
-            print(ticker, signal, self.holdings)
 
             if signal == 'long_entry':
                 # Set position szie                
@@ -249,10 +253,19 @@ class backtester:
                 # Return cash from trade
                 self.cash += self.holdings.get(ticker, 0) * price
 
+                # Reseting the holdings and saving the last position
+                self.last_long_position = self.holdings.get(ticker, 0)
+                self.holdings[ticker] = 0
+
+
             elif signal == 'short_exit' and self.holdings.get(ticker, 0) < 0:
                 # Set sell price add +/- difference to cash 
                 self.short_buy_price[ticker] = price
                 self.cash += abs(self.holdings.get(ticker, 0)) * (self.short_sell_price[ticker] - self.short_buy_price[ticker])
+
+                # Reseting the holdings and saving the last position
+                self.last_short_position = abs(self.holdings.get(ticker, 0))
+                self.holdings[ticker] = 0
 
             # Keep portfolio value only once per day
             if last_date != i:
@@ -273,23 +286,13 @@ class backtester:
             if signal in ['long_entry', 'long_exit', 'short_entry', 'short_exit']:
                 self.trade_log['Date'].append(i)
                 self.trade_log['Ticker'].append(ticker)
-                self.trade_log['Position'].append(position_size if signal in ['long_entry', 'short_entry'] else np.nan)
+                self.trade_log['Position'].append(self.holdings[ticker])
                 self.trade_log['Action'].append(signal)
                 self.trade_log['Price'].append(price)
                 self.trade_log['Stop Loss'].append(row['stopl'] if signal in ['long_entry', 'short_entry'] else np.nan)
                 self.trade_log['Take Profit'].append(row['takep'] if signal in ['long_entry', 'short_entry'] else np.nan)
-                self.trade_log['Profit/Loss'].append(((price - self.long_buy_price.get(ticker, 0)) * self.holdings.get(ticker, 0) if signal == 'long_exit' else 
-                                                      (self.short_buy_price.get(ticker, 0) - price) * abs(self.holdings.get(ticker, 0))) if signal in ['long_exit', 'short_exit'] else np.nan)
-
-
-            # Close positions i holdings and price dictionaries
-            if signal == 'long_exit':
-                self.holdings[ticker] = 0
-                del self.long_buy_price[ticker]
-            elif signal == 'short_exit':
-                self.holdings[ticker] = 0
-                del self.short_sell_price[ticker]
-                del self.short_buy_price[ticker]
+                self.trade_log['Profit/Loss'].append(((price - self.long_buy_price.get(ticker, 0)) * self.last_long_position if signal == 'long_exit' else 
+                                                      (self.short_buy_price.get(ticker, 0) - price) * self.last_short_position if signal in ['long_exit', 'short_exit'] else np.nan))
 
             # Keep track of progress
             print(i)
@@ -306,7 +309,7 @@ class backtester:
         print(self.portfolio)
         print(self.trade_log)
         plt.plot(self.data.index.unique(), self.portfolio['Portfolio Value'], color='green', label='Strategy')
-        plt.plot(self.data[self.data['ticker'] == 'SPY']['close'] * (INITIAL_BALANCE / self.data[self.data['ticker'] == 'SPY']['close'].iloc[0]), color='red', label='$SPY')
+        #plt.plot(self.data[self.data['ticker'] == 'SPY']['close'] * (INITIAL_BALANCE / self.data[self.data['ticker'] == 'SPY']['close'].iloc[0]), color='red', label='$SPY')
         plt.xlabel('Date')
         plt.ylabel('USD')
         plt.title('Bollinger Bands and RSI Strategy plotted against $SPY')
@@ -317,11 +320,12 @@ class backtester:
 # Run script
 if __name__ == '__main__':
     # Initializing
-    tickers = ['SPY']#, 'AAPL', 'GLD', 'LLY', 'NVDA', 'WMT', 'MSFT', 'GOVT', 'TEAM', 'FXI', 'IWM', 'AVGO', 'JPM', 'JNJ', 'GOOG', 'CVNA', 'MNST', 'TSCO', 'DECK', 'TPL', 'FICO', 'NVR', 'AMD', 'CELH', 'SMCI', 'GME', 'AMC', 'VRT']
+    tickers = ['SPY', 'AAPL', 'GLD', 'LLY']#, 'NVDA', 'WMT', 'MSFT', 'GOVT', 'TEAM', 'FXI', 'IWM', 'AVGO', 'JPM', 'JNJ', 'GOOG', 'CVNA', 'MNST', 'TSCO', 'DECK', 'TPL', 'FICO', 'NVR', 'AMD', 'CELH', 'SMCI', 'GME', 'AMC', 'VRT']
     data = pd.DataFrame()
     
     # Looping through tickers
     for ticker in tickers:
+        # Generating data for each stock
         stock = stock_signals(ticker, START_DATE, END_DATE)
         stock.get_data()
         stock.calculate_technicals()
@@ -338,3 +342,4 @@ if __name__ == '__main__':
     portfolio = backtester(INITIAL_BALANCE, data)
     portfolio.backtest()
     portfolio.output()
+
