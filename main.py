@@ -8,11 +8,9 @@ pd.set_option('display.max_rows', None)
 # Setting all import variables 
 INITIAL_BALANCE = 100000
 RISK = 0.1
-
 STD_MULT = 2
 UPPER_THRESH = 70
 LOWER_THRESH = 30
-
 START_DATE = '2015-01-01'
 END_DATE = '2025-03-10'
 
@@ -26,7 +24,6 @@ class stock_signals:
         self.ticker = ticker
         self.start_date = start_date
         self.end_date = end_date
-
 
 
     def get_data(self):
@@ -45,7 +42,6 @@ class stock_signals:
 
         # Saving
         self.data = data
-
 
 
     def calculate_technicals(self):
@@ -95,7 +91,6 @@ class stock_signals:
         # Saving non NAN values
         self.data = self.data[100:]
 
-    
 
     def generate_signals(self):
         # Generating signals
@@ -107,7 +102,7 @@ class stock_signals:
             # Useing indicators to generate signals
             if row['close'] <= row['lower_band'] and row['rsi'] < row['rsi_oversold_percentile'] and row['sma_50'] > row['sma_200'] and action != 'entry':
                 # Setting signals
-                self.data.loc[index, 'signal'] = '_entry'
+                self.data.loc[index, 'signal'] = 'entry'
                 action = 'entry'
                 # Setting exit points
                 take_profit = row['takep']
@@ -125,7 +120,6 @@ class stock_signals:
 
     def generate_plot(self):
         # Saving and plotting all data
-
         # Creating plots
         fig, (ax1, ax2) = plt.subplots(2, figsize=(30,30) ,sharex=True)
         fig.suptitle(f'Plot of ${self.ticker} with Bollinger Bands and Macd')
@@ -141,8 +135,8 @@ class stock_signals:
         ax2.plot(self.data['rsi'], label='Relative Strength Index', color='orange')
 
         # Plotting signals
-        entry_signals = self.data[self.data['signal'] == 'long_entry']
-        exit_signals = self.data[self.data['signal'] == 'long_exit']
+        entry_signals = self.data[self.data['signal'] == 'entry']
+        exit_signals = self.data[self.data['signal'] == 'exit']
         ax1.scatter(entry_signals.index, entry_signals['close'], marker='^', color='green', s=75, label='Entry')
         ax1.scatter(exit_signals.index, exit_signals['close'], marker='o', color='green', s=75, label='Exit')
 
@@ -163,12 +157,12 @@ class backtester:
         self.data = data
         self.cash = initial_balance
 
-        self.last_long_position = None
-        self.long_buy_price = {}
+        self.last_position = None
+        self.buy_price = {}
         self.holdings = {}
         self.portfolio = {
             'Date' : [],
-            'Long Value': [],
+            'Position Value': [],
             'Cash' : [],
             'Portfolio Value' : []
         }
@@ -184,7 +178,6 @@ class backtester:
         }
 
 
-
     def calculate_position_size(self, atr, price):
         # Calculating position size using ATR to adjust for volatility
         position_size = (RISK * self.cash) / (atr * price)
@@ -195,7 +188,6 @@ class backtester:
             position_size = 1
         return position_size
     
-
 
     def backtest(self):
         # Backtest
@@ -216,7 +208,7 @@ class backtester:
                 if self.cash >= position_size * price:
                     # Save position size, buy price and reduce cash
                     self.holdings[ticker] = position_size
-                    self.long_buy_price[ticker] = price
+                    self.buy_price[ticker] = price
                     self.cash -= position_size * price
 
 
@@ -225,18 +217,18 @@ class backtester:
                 self.cash += self.holdings.get(ticker, 0) * price
 
                 # Reseting the holdings and saving the last position
-                self.last_long_position = self.holdings.get(ticker, 0)
+                self.last_position = self.holdings.get(ticker, 0)
                 self.holdings[ticker] = 0
 
             # Keep portfolio value only once per day
             if last_date != i:
-                # Value of long and short positions + cash
-                long_value = sum(self.holdings.get(t, 0) * self.data[self.data['ticker'] == t].loc[i, 'close'] for t in list(self.holdings.keys()) if self.holdings.get(t, 0) > 0)
-                portfolio_value = self.cash + long_value
+                # Value of positions + cash
+                value = sum(self.holdings.get(t, 0) * self.data[self.data['ticker'] == t].loc[i, 'close'] for t in list(self.holdings.keys()) if self.holdings.get(t, 0) > 0)
+                portfolio_value = self.cash + value
 
                 # Appending portfolio
                 self.portfolio['Date'].append(i)
-                self.portfolio['Long Value'].append(long_value)
+                self.portfolio['Position Value'].append(value)
                 self.portfolio['Cash'].append(self.cash)
                 self.portfolio['Portfolio Value'].append(portfolio_value)
 
@@ -247,18 +239,17 @@ class backtester:
             if signal in ['entry', 'exit']:
                 self.trade_log['Date'].append(i)
                 self.trade_log['Ticker'].append(ticker)
-                self.trade_log['Position'].append(self.holdings[ticker])
+                self.trade_log['Position'].append(self.last_position)
                 self.trade_log['Action'].append(signal)
                 self.trade_log['Price'].append(price)
                 self.trade_log['Stop Loss'].append(row['stopl'] if signal == 'entry' else np.nan)
                 self.trade_log['Take Profit'].append(row['takep'] if signal == 'entry' else np.nan)
                 self.trade_log['Profit/Loss'].append(
-                    (price - self.long_buy_price.get(ticker, 0)) * self.last_long_position if signal == 'exit' else np.nan
+                    (price - self.buy_price.get(ticker, 0)) * self.last_position if signal == 'exit' else np.nan
                 )
 
-
             # Keep track of progress
-            #print(i)
+            print(i)
 
 
         # Set dicitonaries to dataframes
@@ -266,24 +257,33 @@ class backtester:
         self.trade_log = pd.DataFrame(self.trade_log)
     
 
-
     # Print portoflio, trade log and graph
     def output(self):
-        print(self.portfolio)
-        print(self.trade_log)
+        self.portfolio['Returns'] = self.portfolio['Portfolio Value'].diff(1)
+        sharpe_ratio = self.portfolio['Returns'].mean() / self.portfolio['Returns'].std()
+
+        stats = {
+            'Sharpe Ratio' : float(sharpe_ratio),
+            'Total Returns': float((self.portfolio['Portfolio Value'].iloc[-1] / INITIAL_BALANCE - 1) * 100),
+            'Annualized Return' : (self.portfolio["Portfolio Value"].iloc[-1] / INITIAL_BALANCE) ** (1/15) - 1,
+        }
+
+        print(pd.DataFrame([stats]))
+
         plt.plot(self.data.index.unique(), self.portfolio['Portfolio Value'], color='green', label='Strategy')
-        #plt.plot(self.data[self.data['ticker'] == 'SPY']['close'] * (INITIAL_BALANCE / self.data[self.data['ticker'] == 'SPY']['close'].iloc[0]), color='red', label='$SPY')
+        plt.plot(self.data[self.data['ticker'] == 'SPY']['close'] * (INITIAL_BALANCE / self.data[self.data['ticker'] == 'SPY']['close'].iloc[0]), color='red', label='$SPY')
         plt.xlabel('Date')
         plt.ylabel('USD')
         plt.title('Bollinger Bands and RSI Strategy plotted against $SPY')
         plt.legend()
         plt.show()
 
+
     
 # Run script
 if __name__ == '__main__':
     # Initializing
-    tickers = ['SPY']#, 'AAPL', 'GLD', 'LLY', 'NVDA', 'WMT', 'MSFT', 'GOVT', 'TEAM', 'FXI', 'IWM', 'AVGO', 'JPM', 'JNJ', 'GOOG', 'CVNA', 'MNST', 'TSCO', 'DECK', 'TPL', 'FICO', 'NVR', 'AMD', 'CELH', 'SMCI', 'GME', 'AMC', 'VRT']
+    tickers = ['SPY', 'AAPL', 'GLD', 'LLY', 'NVDA', 'WMT', 'MSFT', 'GOVT', 'TEAM', 'FXI', 'IWM', 'AVGO', 'JPM', 'JNJ', 'GOOG', 'CVNA', 'MNST', 'TSCO', 'DECK', 'TPL', 'FICO', 'NVR', 'AMD', 'CELH', 'SMCI', 'GME', 'AMC', 'VRT']
     data = pd.DataFrame()
     
     # Looping through tickers
@@ -293,7 +293,6 @@ if __name__ == '__main__':
         stock.get_data()
         stock.calculate_technicals()
         stock.generate_signals()
-        stock.generate_plot()
 
         data = pd.concat([data, stock.data])
 
@@ -302,7 +301,6 @@ if __name__ == '__main__':
 
     # Print portfolio
     portfolio = backtester(INITIAL_BALANCE, data)
-    #portfolio.backtest()
-    #print(portfolio.portfolio[925:930], portfolio.trade_log)
-    #portfolio.output()
+    portfolio.backtest()
+    portfolio.output()
 
