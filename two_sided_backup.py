@@ -52,6 +52,7 @@ class stock_signals:
         # Calculating SMAs
         self.data['sma_20'] = self.data['tp'].rolling(window=20).mean()
         self.data['sma_50'] = self.data['tp'].rolling(window=50).mean()
+        self.data['sma_50_d2'] = self.data['sma_50'].diff(2)
         self.data['sma_200'] = self.data['tp'].rolling(window=200).mean()
 
         # Calculating upper/lower bollinger bands
@@ -79,8 +80,10 @@ class stock_signals:
         self.data['atr_percentile'] = self.data['atr'].rolling(50).apply(lambda x: np.percentile(x, 75))
 
         # Calculating stop loss and take profit using atr percentiles
-        self.data['stopl'] = self.data['close'] - self.data['atr'] * np.where(self.data['atr'] > self.data['atr_percentile'], 5, 2)
-        self.data['takep'] = self.data['close'] + self.data['atr'] * np.where(self.data['atr'] > self.data['atr_percentile'], 20, 10)
+        self.data['long_stopl'] = self.data['close'] - self.data['atr'] * np.where(self.data['atr'] > self.data['atr_percentile'], 5, 2)
+        self.data['long_takep'] = self.data['close'] + self.data['atr'] * np.where(self.data['atr'] > self.data['atr_percentile'], 20, 10)
+        self.data['short_stopl'] = self.data['close'] + self.data['atr'] * np.where(self.data['atr'] > self.data['atr_percentile'], 5, 2)
+        self.data['short_takep'] = self.data['close'] - self.data['atr'] * np.where(self.data['atr'] > self.data['atr_percentile'], 20, 10)
 
         # Calculating ADX
         plus_dm = self.data['high'].diff()
@@ -99,24 +102,38 @@ class stock_signals:
 
     def generate_signals(self):
         # Generating signals
-        action = None
+        long_action = None
+        short_action = None
         self.data['signal'] = ''
 
         for index,row in self.data.iterrows():
             # Iterating through rows
             # Useing indicators to generate signals
-            if row['close'] <= row['lower_band'] and row['rsi'] < row['rsi_oversold_percentile'] and row['sma_50'] > row['sma_200'] and action != 'entry':
+            if row['close'] <= row['lower_band'] and row['rsi'] < row['rsi_oversold_percentile'] and row['sma_50'] > row['sma_200'] and long_action != 'entry':
                 # Setting signals
-                self.data.loc[index, 'signal'] = '_entry'
-                action = 'entry'
+                self.data.loc[index, 'signal'] = 'long_entry'
+                long_action = 'entry'
                 # Setting exit points
-                take_profit = row['takep']
-                stop_loss = row['stopl']
+                long_take_profit = row['long_takep']
+                long_stop_loss = row['long_stopl']
 
-            elif action == 'entry' and (stop_loss >= row['close'] or take_profit <= row['close']) and row['rsi'] > 55:
+            elif row['close'] >= row['upper_band'] and row['rsi'] > row['rsi_overbought_percentile'] and row['sma_50'] < row['sma_200'] and short_action != 'entry':
+                # Setting Signals
+                self.data.loc[index, 'signal'] = 'short_entry'
+                short_action = 'entry'
+                # Setting dexit points
+                short_take_profit = row['short_takep']
+                short_stop_loss = row['short_stopl']
+
+            elif long_action == 'entry' and (long_stop_loss >= row['close'] or long_take_profit <= row['close']) and row['rsi'] > 55:
                 # Setting signals
-                self.data.loc[index, 'signal'] = 'exit'
-                action = 'exit'
+                self.data.loc[index, 'signal'] = 'long_exit'
+                long_action = 'exit'
+
+            elif short_action == 'entry' and (short_take_profit >= row['close'] or short_stop_loss <= row['close']) and row['rsi'] < 40:
+                #Setting Signals
+                self.data.loc[index, 'signal'] = 'short_exit'
+                short_action = 'exit'
             
             else:
                 # Setting hold to all other spaces that dont meet criteria 
@@ -141,10 +158,14 @@ class stock_signals:
         ax2.plot(self.data['rsi'], label='Relative Strength Index', color='orange')
 
         # Plotting signals
-        entry_signals = self.data[self.data['signal'] == 'long_entry']
-        exit_signals = self.data[self.data['signal'] == 'long_exit']
-        ax1.scatter(entry_signals.index, entry_signals['close'], marker='^', color='green', s=75, label='Entry')
-        ax1.scatter(exit_signals.index, exit_signals['close'], marker='o', color='green', s=75, label='Exit')
+        long_entry_signals = self.data[self.data['signal'] == 'long_entry']
+        short_entry_signals = self.data[self.data['signal'] == 'short_entry']
+        long_exit_signals = self.data[self.data['signal'] == 'long_exit']
+        short_exit_signals = self.data[self.data['signal'] == 'short_exit']
+        ax1.scatter(long_entry_signals.index, long_entry_signals['close'], marker='^', color='green', s=75, label='Long Entry')
+        ax1.scatter(short_entry_signals.index, short_entry_signals['close'], marker='v', color='red', s=75, label='Short Entry')
+        ax1.scatter(long_exit_signals.index, long_exit_signals['close'], marker='o', color='green', s=75, label='Long Exit')
+        ax1.scatter(short_exit_signals.index, short_exit_signals['close'], marker='o', color='red', s=75, label='Short Exit')
 
         # Labeling
         ax1.set_ylabel('Price')
@@ -164,10 +185,14 @@ class backtester:
         self.cash = initial_balance
 
         self.last_long_position = None
+        self.last_short_position = None
+        self.short_buy_price = {}
+        self.short_sell_price = {}
         self.long_buy_price = {}
         self.holdings = {}
         self.portfolio = {
             'Date' : [],
+            'Short Value': [],
             'Long Value': [],
             'Cash' : [],
             'Portfolio Value' : []
@@ -208,7 +233,7 @@ class backtester:
             price = row['close']
             signal = row['signal']
 
-            if signal == 'entry':
+            if signal == 'long_entry':
                 # Set position szie                
                 position_size = self.calculate_position_size(row['atr'], price)
 
@@ -220,7 +245,20 @@ class backtester:
                     self.cash -= position_size * price
 
 
-            elif signal == 'exit' and self.holdings.get(ticker, 0) > 0:
+            if signal == 'short_entry':
+                # Set position szie
+                position_size = self.calculate_position_size(row['atr'], price)
+
+                # Check if cash is enough to cover estimated margin requirements
+                if self.cash >= position_size * price * 1.5:
+                    # Assume position is opened on margin and only difference in sell/buy matters
+                    # Set holdings to negative position size
+                    self.holdings[ticker] =  -position_size
+                    # Save sell price
+                    self.short_sell_price[ticker] = price
+
+
+            elif signal == 'long_exit' and self.holdings.get(ticker, 0) > 0:
                 # Return cash from trade
                 self.cash += self.holdings.get(ticker, 0) * price
 
@@ -228,14 +266,26 @@ class backtester:
                 self.last_long_position = self.holdings.get(ticker, 0)
                 self.holdings[ticker] = 0
 
+
+            elif signal == 'short_exit' and self.holdings.get(ticker, 0) < 0:
+                # Set sell price add +/- difference to cash 
+                self.short_buy_price[ticker] = price
+                self.cash += abs(self.holdings.get(ticker, 0)) * (self.short_sell_price[ticker] - self.short_buy_price[ticker])
+
+                # Reseting the holdings and saving the last position
+                self.last_short_position = abs(self.holdings.get(ticker, 0))
+                self.holdings[ticker] = 0
+
             # Keep portfolio value only once per day
             if last_date != i:
                 # Value of long and short positions + cash
                 long_value = sum(self.holdings.get(t, 0) * self.data[self.data['ticker'] == t].loc[i, 'close'] for t in list(self.holdings.keys()) if self.holdings.get(t, 0) > 0)
-                portfolio_value = self.cash + long_value
+                short_value = sum(abs(self.holdings.get(t, 0)) * (self.short_sell_price.get(t, 0) - self.data[self.data['ticker'] == t].loc[i, 'close']) for t in list(self.holdings.keys()) if self.holdings.get(t, 0) < 0)
+                portfolio_value = self.cash + long_value + short_value
 
                 # Appending portfolio
                 self.portfolio['Date'].append(i)
+                self.portfolio['Short Value'].append(short_value)
                 self.portfolio['Long Value'].append(long_value)
                 self.portfolio['Cash'].append(self.cash)
                 self.portfolio['Portfolio Value'].append(portfolio_value)
@@ -244,16 +294,21 @@ class backtester:
                 last_date = i
 
             # Append trade log dictionary
-            if signal in ['entry', 'exit']:
+            if signal in ['long_entry', 'long_exit', 'short_entry', 'short_exit']:
                 self.trade_log['Date'].append(i)
                 self.trade_log['Ticker'].append(ticker)
                 self.trade_log['Position'].append(self.holdings[ticker])
                 self.trade_log['Action'].append(signal)
                 self.trade_log['Price'].append(price)
-                self.trade_log['Stop Loss'].append(row['stopl'] if signal == 'entry' else np.nan)
-                self.trade_log['Take Profit'].append(row['takep'] if signal == 'entry' else np.nan)
+                self.trade_log['Stop Loss'].append((row['long_stopl'] if signal == 'long_entry' else row['short_stopl']) if signal in ['long_entry', 'short_entry'] else np.nan)
+                self.trade_log['Take Profit'].append((row['long_takep'] if signal == 'long_entry' else row['short_takep']) if signal in ['long_entry', 'short_entry'] else np.nan)
                 self.trade_log['Profit/Loss'].append(
-                    (price - self.long_buy_price.get(ticker, 0)) * self.last_long_position if signal == 'exit' else np.nan
+                    (
+                    (price - self.long_buy_price.get(ticker, 0)) * self.last_long_position if signal == 'long_exit' 
+                    else (self.short_sell_price.get(ticker, 0) - self.short_buy_price.get(ticker, 0)) * self.last_short_position
+                    ) 
+                    if signal in ['long_exit', 'short_exit']
+                    else np.nan
                 )
 
 
